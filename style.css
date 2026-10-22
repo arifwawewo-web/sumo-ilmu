@@ -446,12 +446,15 @@ svg {
   border: 2px solid #fff6;
   font-weight: 800;
   min-width: 0;
+  overflow: hidden;
 }
 .np u {
   text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .np i {
   font-style: normal;
@@ -459,6 +462,7 @@ svg {
   color: #222;
   border-radius: 99px;
   padding: 0 7px;
+  flex: 0 0 auto;
 }
 .np.wn {
   border-color: var(--g);
@@ -1310,6 +1314,16 @@ svg {
     animation: none!important;
   }
 }
+#duel .lives {
+  font-size: clamp(14px,1.8vw,20px);
+  letter-spacing: 3px;
+  margin: -4px 0 8px;
+  min-height: 1.3em;
+}
+#duel .lives .dead {
+  opacity: .25;
+  filter: grayscale(1);
+}
 #duel .hpwrap {
   width: 100%;
   height: 16px;
@@ -1346,8 +1360,7 @@ svg {
     animation: none!important;
   }
 }
-#roundcall,
-#pushcall {
+#roundcall {
   position: fixed;
   inset: 0;
   z-index: 13;
@@ -1356,54 +1369,6 @@ svg {
   justify-content: center;
   pointer-events: none;
   overflow: hidden;
-}
-.pc-txt {
-  font-weight: 900;
-  text-align: center;
-  opacity: 0;
-  transform: scale(.4);
-  transition: opacity .22s ease,transform .3s cubic-bezier(.2,1.6,.4,1);
-  font-size: clamp(20px,4.8vw,46px);
-  letter-spacing: 1px;
-  max-width: 88vw;
-  padding: 0 16px;
-  box-sizing: border-box;
-  line-height: 1.15;
-}
-.pc-txt.pclong {
-  font-size: clamp(16px,3.4vw,32px);
-}
-.pc-txt.show {
-  opacity: 1;
-  transform: scale(1);
-}
-.pc-txt.pc-out {
-  opacity: 0;
-  transform: scale(1.25);
-  transition: opacity .25s ease,transform .25s ease;
-}
-.pc-arrow {
-  position: absolute;
-  top: 50%;
-  width: 46%;
-  height: 10px;
-  border-radius: 6px;
-  opacity: 0;
-  transition: opacity .2s ease,transform .45s cubic-bezier(.2,.8,.2,1);
-}
-.pc-arrow.l {
-  left: 2%;
-  transform: translateY(-50%) scaleX(0);
-  transform-origin: left;
-}
-.pc-arrow.r {
-  right: 2%;
-  transform: translateY(-50%) scaleX(0);
-  transform-origin: right;
-}
-.pc-arrow.show {
-  opacity: .9;
-  transform: translateY(-50%) scaleX(1);
 }
 .rc-text {
   font-weight: 900;
@@ -1473,8 +1438,85 @@ svg {
   display: block;
   border-radius: 10px;
   filter: drop-shadow(0 10px 10px #0009);
+  transform: scale(1) translateX(0);
 }
 #duel .fighter.fly {
   transition: transform .9s ease-in!important;
   transform: translate(var(--fx),-260px) rotate(var(--fr))!important;
+}
+
+/* Karakter yang menjawab benar membesar & menyerang ke arah lawan */
+#duel .fighter img.atk {
+  animation: atkLunge 2s cubic-bezier(.3,.7,.3,1) forwards;
+  z-index: 5;
+  filter: drop-shadow(0 16px 16px #000b) brightness(1.15);
+}
+@keyframes atkLunge {
+  0% {
+    transform: scale(1) translateX(0);
+  }
+  32% {
+    transform: scale(1.4) translateX(var(--lunge,0));
+  }
+  72% {
+    transform: scale(1.4) translateX(var(--lunge,0));
+  }
+  100% {
+    transform: scale(1) translateX(0);
+  }
+}
+/* Karakter yang kena dorongan tersentak sebentar */
+#duel .fighter img.hit {
+  animation: hitFlinch .5s ease;
+  filter: brightness(1.45) saturate(1.3) drop-shadow(0 0 16px #ff3b3b);
+}
+@keyframes hitFlinch {
+  0%, 100% {
+    transform: translateX(0) rotate(0);
+  }
+  20% {
+    transform: translateX(var(--flinch,0)) rotate(var(--rot,0));
+  }
+  45% {
+    transform: translateX(calc(var(--flinch,0) * -0.6)) rotate(calc(var(--rot,0) * -0.6));
+  }
+  70% {
+    transform: translateX(calc(var(--flinch,0) * 0.3)) rotate(calc(var(--rot,0) * 0.3));
+  }
+}
+@media(prefers-reduced-motion:reduce) {
+  #duel .fighter img.atk,
+  #duel .fighter img.hit {
+    animation: none!important;
+  }
+}
+
+/* Tab untuk melihat kembali Grup Swiss / Wildcard / Playoff */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin: 8px 0 10px;
+}
+.tabs:empty {
+  display: none;
+}
+.tab {
+  font: inherit;
+  font-weight: 800;
+  font-size: 16px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  border: 2px solid var(--gold);
+  background: #ffffff14;
+  color: var(--t);
+  cursor: pointer;
+}
+.tab.on {
+  background: var(--gold);
+  color: #2a1c00;
+}
+#board.pob #tabs {
+  order: 2;
 }
