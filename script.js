@@ -1,4 +1,6 @@
-let BYE = null, H = [], SR = 0, P = [], phase = 'swiss', M = [], mi = 0, D = null, qp = 0, QO = [], ac = null, WN = 2, LN = 2, revealed = false, SLOTS = 0, SEEDS = [], SEEDL = [], PO = [], SEQ = [], KK = 8, BRD = {}, BYT = '', SHEETROWS = [], CURBANK = null;
+let BYE = [], DUELBUSY = false, VIEW = null, CUR_PH = '', CUR_RULE = '', H = [], SR = 0, P = [], phase = 'swiss', M = [], mi = 0, D = null, qp = 0, QO = [], ac = null, WN = 2, LN = 2, revealed = false, SHEETROWS = [], CURBANK = null;
+let SEQ = [], DE = null, UBCHAMP = null, UBRUNNER = null, LBCHAMP = null, LBRUNNER = null;
+const BRC = { BW: 176, DX: 214, SP: 76, BH: 46 };
 const VARIANTS = [
   {
     n: 'Original',
@@ -36,13 +38,6 @@ const VARIANTS = [
     r: 'assets/characters/R_Zenith.png'
   }
 ];
-const BRC = {
-  BW: 176,
-  DX: 214,
-  X0: 14,
-  SP: 76,
-  BH: 46
-};
 
 // Util kecil: acak array, escape HTML, elemen by id
 const esc = s => String(s).replace(/[&<>"]/g, c => ({
@@ -191,7 +186,7 @@ for (let i = 4; i <= 30; i++)
   $('cnt').add(new Option(i + ' peserta' + (i % 2 ? ' (ganjil)' : ''), i));
 $('cnt').value = 8;
 function oddNote() {
-  $('odd').textContent = $('cnt').value % 2 ? 'Jumlah ganjil: 1 peserta tiap ronde mendapat WO (menang otomatis).' : '';
+  $('odd').textContent = $('cnt').value % 2 ? 'Jumlah ganjil: ada peserta yang mendapat WO (menang otomatis) di tiap ronde.' : 'Jika ada kelompok skor yang jumlahnya ganjil, 1 peserta di kelompok itu mendapat WO.';
 }
 
 // Parser CSV sederhana (mendukung tanda kutip & koma di dalam sel)
@@ -342,10 +337,15 @@ function startT() {
   phase = 'swiss';
   M = [];
   mi = 0;
-  BYE = null;
-  BYT = '';
-  PO = [];
+  BYE = [];
+  DUELBUSY = false;
+  VIEW = null;
   SEQ = [];
+  DE = null;
+  UBCHAMP = null;
+  UBRUNNER = null;
+  LBCHAMP = null;
+  LBRUNNER = null;
   P = [];
   for (let i = 0; i < c; i++)
     P.push({
@@ -365,46 +365,46 @@ function startT() {
 // LOGIKA TURNAMEN — Swiss Stage, Wildcard, Upper/Lower Bracket
 // =========================================================
 function pairUp(a) {
-  a = sh(a).sort((x, y) => y.w - y.l - (x.w - x.l));
-  let bye = null;
-  if (a.length % 2) {
-    for (let i = a.length - 1; i >= 0; i--)
-      if (!a[i].bye) {
-        bye = a.splice(i, 1)[0];
-        break;
+  // Pasangan HANYA dibuat di dalam kelompok rekor yang persis sama (mis. 2-0 hanya lawan 2-0).
+  // Kelompok yang jumlahnya ganjil: 1 peserta di kelompok itu mendapat WO (menang otomatis).
+  const key = p => p.w + '-' + p.l;
+  const grp = {};
+  sh(a).forEach(p => (grp[key(p)] = grp[key(p)] || []).push(p));
+  const keys = Object.keys(grp).sort((x, y) => {
+    const [xw, xl] = x.split('-').map(Number), [yw, yl] = y.split('-').map(Number);
+    return (yw - yl) - (xw - xl) || yw - xw;
+  });
+  const rematches = list => {
+    let c = 0;
+    for (let i = 0; i < list.length; i += 2)
+      if ((list[i].opp || []).includes(list[i + 1]))
+        c++;
+    return c;
+  };
+  const r = [], byes = [];
+  keys.forEach(k => {
+    let g = grp[k];
+    if (g.length % 2) {
+      // WO diberikan ke yang paling jarang kena WO (urutan sudah diacak)
+      g = g.slice().sort((x, y) => (x.bye || 0) - (y.bye || 0));
+      const b = g.shift();
+      b.bye = (b.bye || 0) + 1;
+      byes.push(b);
+    }
+    // hindari rematch (lawan yang sama) sebisa mungkin
+    let best = g, bc = rematches(g);
+    for (let t = 0; t < 40 && bc > 0; t++) {
+      const c = sh(g), cc = rematches(c);
+      if (cc < bc) {
+        best = c;
+        bc = cc;
       }
-    if (!bye)
-      bye = a.pop();
-    bye.bye = (bye.bye || 0) + 1;
-  }
-  const r = [];
-  for (let i = 0; i < a.length; i += 2)
-    r.push([
-      a[i],
-      a[i + 1]
-    ]);
-  return {
-    r,
-    bye
-  };
+    }
+    for (let i = 0; i < best.length; i += 2)
+      r.push([best[i], best[i + 1]]);
+  });
+  return { r, byes };
 }
-function pairRandom(a) {
-  a = sh(a);
-  let bye = null;
-  if (a.length % 2)
-    bye = a.pop();
-  const r = [];
-  for (let i = 0; i < a.length; i += 2)
-    r.push([
-      a[i],
-      a[i + 1]
-    ]);
-  return {
-    r,
-    bye
-  };
-}
-
 // Animasi kocok nama sebelum Swiss Stage 1 dimulai
 function shuffleAnim() {
   show('shuffle');
@@ -420,21 +420,21 @@ function shuffleAnim() {
 
 // Menentukan ronde berikutnya sesuai fase turnamen saat ini
 function round() {
-  let pool, b;
-  BYT = '';
+  const prevStage = stageOf(phase);
+  let pool, b = [];
   if (phase == 'swiss') {
     pool = P.filter(p => p.st == 'swiss');
     if (!pool.length)
       return endSwiss();
-    ({
-      r: M,
-      bye: b
-    } = pairUp(pool));
-    if (b) {
-      b.w++;
-      if (b.w >= WN)
-        b.st = 'q';
-    }
+    ({ r: M, byes: b } = pairUp(pool));
+    b.forEach(x => {
+      x.w++;
+      if (x.w >= WN)
+        x.st = 'q';
+    });
+    // tidak ada yang bisa bertanding di ronde ini (semua sendirian di kelompoknya) -> langsung lanjut
+    if (!M.length)
+      return round();
     SR++;
     M.forEach(m => {
       m.box = m[0].w + '-' + m[0].l;
@@ -442,33 +442,18 @@ function round() {
       H.push(m);
     });
     $('ph').textContent = 'Swiss Stage';
-    $('rule').textContent = `Menang ${ WN }x lolos Playoff • Kalah ${ LN }x masuk Wildcard`;
-  } else if (phase == 'wc') {
-    pool = P.filter(p => p.st == 'wc');
-    const need = pool.length - SLOTS;
-    if (need <= 0) {
-      pool.forEach(p => p.st = 'po');
-      return startPO(SEEDS.concat(sh(pool)));
-    }
-    const d = Math.min(Math.floor(pool.length / 2), need);
-    pool = sh(pool);
-    M = [];
-    for (let i = 0; i < d; i++)
-      M.push([
-        pool[2 * i],
-        pool[2 * i + 1]
-      ]);
-    M.forEach(m => {
-      m.br = 'wc';
-      H.push(m);
-    });
-    BYT = pool.slice(2 * d).map(p => p.n).join(', ');
-    $('ph').textContent = '\u26A1 Wildcard';
-    $('rule').textContent = `Sistem gugur — ${ SLOTS } pemenang terakhir masuk Playoff`;
-  } else {
+    $('rule').textContent = `Menang ${ WN }x lolos Playoff \u2022 Kalah ${ LN }x masuk Wildcard \u2022 Lawan hanya dari rekor menang-kalah yang sama`;
+  } else if (phase == 'wc' || phase == 'brk') {
     const g = SEQ.find(gr => gr.some(t => !t.done));
-    if (!g)
-      return;
+    if (!g) {
+      UBCHAMP = DE.ub[DE.n][0].win;
+      UBRUNNER = DE.ub[DE.n][0].lose;
+      LBCHAMP = res(DE.lbChampSrc);
+      LBRUNNER = DE.lbFinalMatch ? DE.lbFinalMatch.lose : null;
+      phase = 'gf';
+      return round();
+    }
+    phase = g[0].br == 'wc' ? 'wc' : 'brk';
     M = g.map(t => {
       const m = [
         res(t.a),
@@ -479,138 +464,209 @@ function round() {
       return m;
     });
     const t0 = g[0];
-    $('ph').textContent = t0.br == 'ub' ? '\uD83D\uDD35 Upper Bracket \u2022 Ronde ' + t0.r : t0.br == 'lb' ? '\uD83D\uDFE3 Lower Bracket \u2022 Ronde ' + t0.r : '\uD83C\uDFC6 GRAND FINAL';
-    $('rule').textContent = t0.br == 'ub' ? 'Kalah = turun ke Lower Bracket (belum gugur)' : t0.br == 'lb' ? 'Kalah = langsung tersingkir' : 'Juara Upper Bracket vs Juara Lower Bracket';
+    if (t0.br == 'wc') {
+      $('ph').textContent = '\u26A1 Wildcard \u2022 Ronde ' + t0.r;
+      $('rule').textContent = `Babak Wildcard: peserta saling adu \u2022 ${ DE.W } pemenang terakhir lolos ke Playoff (Lower Bracket) \u2022 Kalah = tersingkir`;
+    } else if (t0.br == 'ub') {
+      $('ph').textContent = '\uD83D\uDD35 Upper Bracket \u2022 Ronde ' + t0.r;
+      $('rule').textContent = 'Kalah = turun ke Lower Bracket (belum gugur)';
+    } else {
+      $('ph').textContent = '\uD83D\uDFE3 Lower Bracket \u2022 Ronde ' + t0.r;
+      $('rule').textContent = 'Kalah di sini = langsung tersingkir dari turnamen';
+    }
+  } else {
+    if (!UBCHAMP || !LBCHAMP)
+      return champion(UBCHAMP || LBCHAMP || P[0]);
+    M = [[
+        UBCHAMP,
+        LBCHAMP
+      ]];
+    M[0].br = 'gf';
+    H.push(M[0]);
+    $('ph').textContent = '\uD83C\uDFC6 GRAND FINAL';
+    $('rule').textContent = 'Juara Upper Bracket vs Juara Lower Bracket';
   }
   BYE = b;
   mi = 0;
+  if (stageOf(phase) != prevStage)
+    VIEW = null;
+  CUR_PH = $('ph').textContent;
+  CUR_RULE = $('rule').textContent;
   draw();
 }
 
-// Swiss Stage selesai -> tentukan siapa lolos & siapa ke Wildcard
+// Swiss Stage selesai.
+//  - Upper Bracket (UB): peserta lolos dengan rekor terbaik. Ukuran bagan: 8 jika peserta awal >= 16, selain itu 4
+//    (menyesuaikan kalau yang lolos lebih sedikit).
+//  - WILDCARD: peserta wildcard (+ yang lolos tapi tidak muat di UB) ADU DULU. Pemenang terakhir = K/2 orang
+//    (4 jika peserta >= 16, selain itu 2) masuk Lower Bracket.
+//  - Lower Bracket (LB): slot pertamanya diisi yang kalah di UB Ronde 1 vs pemenang Wildcard.
 function endSwiss() {
-  const Q = P.filter(p => p.st == 'q').sort((a, b) => b.w - b.l - (a.w - a.l) || Math.random() - 0.5), W = P.filter(p => p.st == 'wc');
-  let K = 4;
-  while (K < Q.length)
+  const c = P.length;
+  const Q = sh(P.filter(p => p.st == 'q')).sort((a, b) => a.l - b.l);
+  const WCs = sh(P.filter(p => p.st == 'wc')).sort((a, b) => b.w - b.l - (a.w - a.l));
+  const target = c >= 16 ? 8 : 4;
+  let K = 2;
+  while (K * 2 <= Math.min(target, Q.length))
     K *= 2;
-  K = Math.min(K, 16);
-  let cap = 4;
-  while (cap * 2 <= P.length)
-    cap *= 2;
-  K = Math.min(K, cap);
-  const direct = Q.slice(0, K);
-  Q.slice(K).forEach(p => p.st = 'out');
-  direct.forEach(p => p.st = 'po');
-  SLOTS = K - direct.length;
-  SEEDS = direct;
-  if (SLOTS <= 0) {
-    W.forEach(p => p.st = 'out');
-    return startPO(direct);
-  }
-  if (W.length <= SLOTS) {
-    W.forEach(p => p.st = 'po');
-    return startPO(direct.concat(W));
-  }
-  phase = 'wc';
+  const pool = Q.concat(WCs);
+  const ubSeeds = pool.slice(0, K);
+  const wcPool = pool.slice(K);
+  ubSeeds.forEach(p => p.st = 'ub');
+  wcPool.forEach(p => p.st = 'wc');
+  DE = buildDoubleElim(ubSeeds, wcPool, K / 2);
+  phase = DE.wc.length ? 'wc' : 'brk';
+  VIEW = null;
   round();
 }
 
-// Mulai fase Playoff (bangun bagan Upper/Lower Bracket)
-function startPO(seeds) {
-  phase = 'po';
-  SEEDL = seeds;
-  KK = seeds.length;
-  PO = buildTpl(KK);
-  round();
-}
-function res(src) {
-  return src.s ? SEEDL[src.s - 1] : src.w ? src.w.win : src.l.lose;
-}
+// Bagan: Wildcard -> (pemenang) Lower Bracket R1; Upper Bracket memakai seeding standar.
+// Urutan main (SEQ): Wildcard dulu, lalu UB R1, LB R1, UB R2, LB R2, LB R3, ... sehingga match Lower
+// yang butuh peserta dari Upper baru bisa main setelah match Upper yang mengisinya selesai.
+// Nomor match (t.id) mengikuti urutan main. Slot kosong menampilkan "Pemenang/Kalah Match N".
+function buildDoubleElim(ubSeeds, wcPool, W) {
+  const K = ubSeeds.length, n = Math.log2(K), T = [];
+  const { BW, DX, SP, BH } = BRC;
+  const mk = (br, r, i, a, b) => {
+    const t = { br, r, i, a, b, done: 0 };
+    T.push(t);
+    return t;
+  };
 
-// Membangun struktur bagan double-elimination (ukuran K peserta)
-function buildTpl(K) {
-  const n = Math.log2(K), T = [], mk = (br, r, i, a, b) => {
-      const t = {
-        br,
-        r,
-        i,
-        a,
-        b,
-        done: 0
-      };
-      T.push(t);
-      return t;
-    };
+  // 1) WILDCARD: sisakan tepat W pemenang. Yang peringkatnya terbaik dapat bye bila jumlah ganjil / tidak perlu main.
+  const WC = [];
+  let cur = wcPool.map(p => ({ p }));
+  for (let wr = 1; cur.length > W; wr++) {
+    const k = Math.min(cur.length >> 1, cur.length - W);
+    const byeN = cur.length - 2 * k, byes = cur.slice(0, byeN), play = cur.slice(byeN);
+    const grp = [];
+    for (let i = 0; i < k; i++)
+      grp.push(mk('wc', wr, i, play[i], play[2 * k - 1 - i]));
+    grp.forEach((t, i) => {
+      const ys = [t.a, t.b].filter(s => s.w && s.w.br == 'wc').map(s => s.w.y);
+      t.y = ys.length ? ys.reduce((x, y) => x + y, 0) / ys.length : BH / 2 + i * SP;
+    });
+    grp.slice().sort((x, y) => x.y - y.y).forEach((t, i, arr) => {
+      if (i && t.y < arr[i - 1].y + SP)
+        t.y = arr[i - 1].y + SP;
+    });
+    WC.push(grp);
+    cur = byes.concat(grp.map(t => ({ w: t })));
+  }
+  const lowerPool = cur;
+
+  // 2) UPPER BRACKET
   let ord = [1];
   for (let s = 2; s <= K; s *= 2) {
     const nx = [];
     ord.forEach(x => nx.push(x, s + 1 - x));
     ord = nx;
   }
-  const UB = [], LB = [];
+  const UB = [];
   UB[1] = [];
   for (let i = 0; i < K / 2; i++)
-    UB[1].push(mk('ub', 1, i, { s: ord[2 * i] }, { s: ord[2 * i + 1] }));
+    UB[1].push(mk('ub', 1, i, { s: ord[2 * i], seeds: ubSeeds }, { s: ord[2 * i + 1], seeds: ubSeeds }));
   for (let r = 2; r <= n; r++) {
     UB[r] = [];
     for (let i = 0; i < K / Math.pow(2, r); i++)
       UB[r].push(mk('ub', r, i, { w: UB[r - 1][2 * i] }, { w: UB[r - 1][2 * i + 1] }));
   }
-  LB[1] = [];
-  for (let i = 0; i < K / 4; i++)
-    LB[1].push(mk('lb', 1, i, { l: UB[1][2 * i] }, { l: UB[1][2 * i + 1] }));
-  for (let j = 2; j <= 2 * (n - 1); j++) {
-    LB[j] = [];
-    const pv = LB[j - 1];
-    if (j % 2 == 0) {
-      const k = j / 2;
-      for (let i = 0; i < pv.length; i++)
-        LB[j].push(mk('lb', j, i, { l: UB[k + 1][pv.length - 1 - i] }, { w: pv[i] }));
-    } else
-      for (let i = 0; i < pv.length / 2; i++)
-        LB[j].push(mk('lb', j, i, { w: pv[2 * i] }, { w: pv[2 * i + 1] }));
-  }
-  const lbL = LB[2 * (n - 1)][0];
-  lbL.last = 1;
-  const gf = mk('gf', 1, 0, { w: UB[n][0] }, { w: lbL });
-  SEQ = [];
-  SEQ.push(UB[1]);
-  if (n >= 2)
-    SEQ.push(UB[2]);
-  SEQ.push(LB[1]);
-  for (let r = 3; r <= n; r++) {
-    SEQ.push(UB[r]);
-    const j = 2 * (r - 2);
-    SEQ.push(LB[j]);
-    SEQ.push(LB[j + 1]);
-  }
-  for (let j = 1; j <= 2 * (n - 1); j++)
-    if (!SEQ.includes(LB[j]))
-      SEQ.push(LB[j]);
-  SEQ.push([gf]);
-  let id = 1;
-  SEQ.forEach(g => g.forEach(t => t.id = id++));
-  const {BW, DX, X0, SP, BH} = BRC, ubTop = 46;
-  UB[1].forEach((m, i) => m.y = ubTop + i * SP);
+  UB[1].forEach((m, i) => m.y = BH / 2 + i * SP);
   for (let r = 2; r <= n; r++)
     UB[r].forEach((m, i) => m.y = (UB[r - 1][2 * i].y + UB[r - 1][2 * i + 1].y) / 2);
-  const sepY = UB[1][UB[1].length - 1].y + BH + 18, lbTop = sepY + 54;
-  LB[1].forEach((m, i) => m.y = lbTop + i * SP);
-  for (let j = 2; j <= 2 * (n - 1); j++)
-    LB[j].forEach((m, i) => m.y = j % 2 == 0 ? LB[j - 1][i].y : (LB[j - 1][2 * i].y + LB[j - 1][2 * i + 1].y) / 2);
-  for (let r = 1; r <= n; r++)
-    UB[r].forEach(m => m.c = r - 1);
-  for (let j = 1; j <= 2 * (n - 1); j++)
-    LB[j].forEach(m => m.c = j - 1);
-  const gc = Math.max(n - 1, 2 * (n - 1) - 1) + 1;
-  gf.c = gc;
-  gf.y = (UB[n][0].y + lbL.y) / 2;
-  BRD = {
-    W: X0 + gc * DX + BW + 14,
-    H: LB[1][LB[1].length - 1].y + BH + 22,
-    sepY
+
+  // 3) LOWER BRACKET: R1 = kalah UB R1 vs pemenang wildcard (kalau slot wildcard kurang, yang kalah UB lolos WO)
+  const LB = [];
+  LB[1] = [];
+  let prevSrc = [], prevY = [];
+  for (let i = 0; i < K / 2; i++) {
+    const y = BH / 2 + i * SP;
+    if (i < lowerPool.length) {
+      const t = mk('lb', 1, i, { l: UB[1][i] }, lowerPool[i]);
+      t.y = y;
+      LB[1].push(t);
+      prevSrc.push({ w: t });
+    } else
+      prevSrc.push({ l: UB[1][i] });
+    prevY.push(y);
+  }
+  let lbRound = 2, ubRound = 2, lbFinalMatch = LB[1].length ? LB[1][LB[1].length - 1] : null;
+  while (prevSrc.length > 1 || ubRound <= n) {
+    if (prevSrc.length > 1) {
+      const reduced = [], ry = [];
+      LB[lbRound] = [];
+      for (let i = 0; i < prevSrc.length; i += 2) {
+        const t = mk('lb', lbRound, i / 2, prevSrc[i], prevSrc[i + 1]);
+        t.y = (prevY[i] + prevY[i + 1]) / 2;
+        LB[lbRound].push(t);
+        reduced.push({ w: t });
+        ry.push(t.y);
+        lbFinalMatch = t;
+      }
+      prevSrc = reduced;
+      prevY = ry;
+      lbRound++;
+    }
+    if (ubRound <= n) {
+      const merged = [], my = [];
+      LB[lbRound] = [];
+      for (let i = 0; i < prevSrc.length; i++) {
+        const t = mk('lb', lbRound, i, prevSrc[i], { l: UB[ubRound][i] });
+        t.y = prevY[i];
+        LB[lbRound].push(t);
+        merged.push({ w: t });
+        my.push(t.y);
+        lbFinalMatch = t;
+      }
+      prevSrc = merged;
+      prevY = my;
+      lbRound++;
+      ubRound++;
+    }
+  }
+
+  // 4) Urutan main + nomor match + posisi kolom
+  const wcc = WC.length;
+  T.forEach(t => t.c = t.br == 'lb' ? wcc + t.r - 1 : t.r - 1);
+  SEQ = [
+    ...WC,
+    UB[1],
+    LB[1]
+  ];
+  for (let r = 2; r <= n; r++) {
+    SEQ.push(UB[r]);
+    SEQ.push(LB[2 * r - 2] || []);
+    SEQ.push(LB[2 * r - 1] || []);
+  }
+  let id = 1;
+  SEQ.forEach(g => g.forEach(t => {
+    t.id = id++;
+  }));
+  const lowY = T.filter(t => t.br != 'ub').map(t => t.y);
+  return {
+    T,
+    ub: UB,
+    lb: LB,
+    wc: WC,
+    n,
+    W,
+    wcCols: wcc,
+    lowerPool,
+    lbRound,
+    lbChampSrc: prevSrc[0],
+    lbFinalMatch,
+    ubHeight: UB[1][UB[1].length - 1].y + BH,
+    lbHeight: (lowY.length ? Math.max(...lowY) : 0) + BH
   };
-  return T;
+}
+function res(src) {
+  if (src.p)
+    return src.p;
+  if (src.s)
+    return src.seeds[src.s - 1];
+  if (src.w)
+    return src.w.win;
+  return src.l.lose;
 }
 function draw() {
   if (phase == 'swiss' && SR === 1 && !revealed) {
@@ -627,14 +683,14 @@ function revealPairs() {
   let idx = 0;
   function next() {
     if (idx >= list.length) {
-      if (BYE) {
+      BYE.forEach(bp => {
         const d = document.createElement('div');
         d.className = 'pcard';
-        d.innerHTML = `<b>${ BYE.n }</b><span class="wo">WO — lolos otomatis</span>`;
+        d.innerHTML = `<b>${ esc(bp.n) }</b><span class="wo">WO — lolos otomatis</span>`;
         box.appendChild(d);
         requestAnimationFrame(() => d.classList.add('in'));
         snd(600, 0.2, 'triangle');
-      }
+      });
       setTimeout(() => {
         revealed = true;
         renderBoard();
@@ -657,18 +713,50 @@ function revealPairs() {
 // =========================================================
 // MENGGAMBAR BAGAN (Swiss grid, Wildcard, Upper/Lower Bracket)
 // =========================================================
+// Pilih tampilan babak: 'swiss' (grup), 'wc' (wildcard), 'brk' (playoff). VIEW = null berarti ikut babak yang sedang berjalan.
+function stageOf(ph) {
+  return ph == 'swiss' ? 'swiss' : ph == 'wc' ? 'wc' : 'brk';
+}
+function setView(v) {
+  VIEW = v == stageOf(phase) ? null : v;
+  renderBoard();
+}
 function renderBoard() {
   show('board');
-  $('board').classList.toggle('pob', phase == 'po' || phase == 'done');
-  $('pairs').innerHTML = M.map((m, i) => `<div class="pair ${ i == mi ? 'now' : '' } ${ i < mi ? 'done' : '' }">${ m.t ? `<small style="display:block;color:#fffa;font-size:.55em">${ m.t.br == 'gf' ? 'GRAND FINAL' : 'MATCH ' + m.t.id }</small>` : '' }${ m[0].n } <span style="color:var(--gold)">VS</span> ${ m[1].n }</div>`).join('') + (BYE ? `<div class="pair" style="background:#9b5cf655">${ BYE.n } — WO ✅ menang otomatis</div>` : '') + (BYT ? `<div class="pair" style="background:#9b5cf655;font-size:.75em">${ BYT } — lolos otomatis ronde ini</div>` : '');
-  if (phase == 'swiss')
+  const cur = stageOf(phase), view = VIEW || cur, live = view == cur;
+  $('board').classList.toggle('pob', view != 'swiss');
+  // Tab untuk melihat kembali babak sebelumnya / pratinjau babak berikutnya
+  const tabs = phase == 'swiss' || !DE ? [] : [
+    [
+      'swiss',
+      '\uD83D\uDCCA Grup Swiss'
+    ],
+    DE.wc.length ? [
+      'wc',
+      '\u26A1 Wildcard'
+    ] : null,
+    [
+      'brk',
+      '\uD83C\uDFC6 Playoff'
+    ]
+  ].filter(Boolean);
+  $('tabs').innerHTML = tabs.map(([k, t]) => `<button class="tab ${ view == k ? 'on' : '' }" onclick="setView('${ k }')">${ t }${ k == cur && phase != 'done' ? ' \u2022 sekarang' : '' }</button>`).join('');
+  if (live) {
+    $('ph').textContent = CUR_PH;
+    $('rule').textContent = CUR_RULE;
+  } else {
+    $('ph').textContent = view == 'swiss' ? '\uD83D\uDCCA Grup Swiss' : view == 'wc' ? '\u26A1 Wildcard' : '\uD83C\uDFC6 Playoff';
+    $('rule').textContent = 'Mode lihat \u2022 tidak mengubah jalannya turnamen \u2022 tekan tab "sekarang" untuk kembali';
+  }
+  $('pairs').innerHTML = !live ? '' : M.map((m, i) => `<div class="pair ${ i == mi ? 'now' : '' } ${ i < mi ? 'done' : '' }">${ m.t ? '<b>Match ' + m.t.id + '</b> \u2022 ' : '' }${ esc(m[0].n) } <span style="color:var(--gold)">VS</span> ${ esc(m[1].n) }</div>`).join('') + BYE.map(bp => `<div class="pair" style="background:#9b5cf655">${ esc(bp.n) } \u2014 WO \u2705 menang otomatis</div>`).join('');
+  if (view == 'swiss')
     swissBoard();
-  else if (phase == 'wc')
+  else if (view == 'wc')
     wcBoard();
   else
     poBoard();
   P.forEach(p => p.mv = 0);
-  $('go').style.display = M.length && phase != 'done' ? 'inline-block' : 'none';
+  $('go').style.display = live && M.length && phase != 'done' ? 'inline-block' : 'none';
   $('endbar').style.display = phase == 'done' ? 'flex' : 'none';
 }
 const chip = p => `<span class="ch ${ p.st } ${ p.mv ? 'new' : '' }">${ p.n }</span>`;
@@ -695,56 +783,121 @@ function swissBoard() {
     if (boxes)
       cols.push(`<div>${ boxes }<div class="plate">Swiss Stage ${ s + 1 }</div></div>`);
   }
-  const resCol = `<div>${ lst(P.filter(p => p.w >= WN), 'win', '\u2705 Lolos Playoff') }${ lst(P.filter(p => p.l >= LN), 'wcg', '\u26A1 Wildcard (kesempatan kedua)') }<div style="font-size:.8em;opacity:.85;margin:-4px 0 8px">Rebutan slot Playoff yang belum terisi. Kalau slot sudah penuh, Wildcard tidak main.</div><div class="plate">Hasil Swiss</div></div>`;
+  const wcSlot = P.length >= 16 ? 4 : 2;
+  const resCol = `<div>${ lst(P.filter(p => p.w >= WN), 'win', '\u2705 Lolos Playoff') }${ lst(P.filter(p => p.l >= LN), 'wcg', '\u26A1 Wildcard (kesempatan kedua)') }<div style="font-size:.8em;opacity:.85;margin:-4px 0 8px">Peserta Wildcard saling adu dulu. ${ wcSlot } pemenang terakhir masuk Lower Bracket.</div><div class="plate">Hasil Swiss</div></div>`;
   $('bk').innerHTML = `<div class="bk" style="grid-template-columns:repeat(${ cols.length + 1 },1fr)">${ cols.join('') }${ resCol }</div>`;
 }
-function wcBoard() {
-  const a = H.filter(m => m.br == 'wc'), al = P.filter(p => p.st == 'wc');
-  $('bk').innerHTML = `<div class="bk" style="grid-template-columns:1fr 1fr"><div class="bx wcg"><div class="bt">⚡ Wildcard • ${ a.length } duel</div>${ a.map(rowH).join('') || '<div class="mr" style="opacity:.5">Belum ada</div>' }</div>${ lst(al, 'wcg', 'Masih bertahan') }</div><div style="font-size:20px;margin:6px">Memperebutkan <b style="color:var(--gold)">${ SLOTS }</b> slot terakhir Playoff</div>`;
+// ---- Bantuan menggambar match di bagan SVG ----
+const svgNm = s => s.length > 15 ? s.slice(0, 14) + '\u2026' : s;
+// Keterangan slot yang belum terisi: dari match mana pemainnya datang
+const srcLbl = s => s.w ? 'Pemenang Match ' + s.w.id : s.l ? 'Kalah Match ' + s.l.id : '';
+function matchSVG(t, x, y) {
+  const fill = t.br == 'ub' ? '#c9a24a' : t.br == 'wc' ? '#8a5cd6' : '#2a7fa8', tx = t.br == 'ub' ? '#2a1c00' : '#fff', BW = BRC.BW;
+  const row = (k, src, sc) => {
+    const p = res(src), yy = y + k * 24, win = t.done && t.win === p, los = t.done && t.lose === p;
+    return `<g opacity="${ los ? 0.45 : 1 }"><rect x="${ x }" y="${ yy }" width="${ BW }" height="22" rx="5" fill="${ fill }"${ win ? ' stroke="#fff" stroke-width="2.5"' : '' }/>` + (p ? `<text x="${ x + 8 }" y="${ yy + 16 }" font-size="13" font-weight="800" fill="${ tx }">${ esc(svgNm(p.n)) }</text>` : `<text x="${ x + 8 }" y="${ yy + 15 }" font-size="10.5" font-weight="700" fill="${ tx }" opacity=".85">${ esc(srcLbl(src)) }</text>`) + (t.done ? `<rect x="${ x + BW - 26 }" y="${ yy }" width="26" height="22" rx="5" fill="#0007"/><text x="${ x + BW - 13 }" y="${ yy + 16 }" text-anchor="middle" font-size="13" font-weight="900" fill="#fff">${ sc }</text>` : '') + '</g>';
+  };
+  const rdy = M.some(m => m.t === t) && !t.done;
+  return `<text x="${ x }" y="${ y - 5 }" font-size="11" font-weight="800" fill="${ fill }">MATCH ${ t.id }</text>` + (rdy ? `<rect class="${ M[mi] && M[mi].t === t ? 'hl' : '' }" x="${ x - 4 }" y="${ y - 3 }" width="${ BW + 8 }" height="52" rx="8" fill="none" stroke="#fff" stroke-width="2"/>` : '') + row(0, t.a, t.sa) + row(1, t.b, t.sb);
 }
-function poBoard() {
-  if (!PO.length) {
-    $('bk').innerHTML = '';
-    return;
-  }
-  const {BW, DX, X0} = BRC, {
-      W,
-      H: HH,
-      sepY
-    } = BRD, cur = M[mi] && M[mi].t, nm = t => t.length > 15 ? t.slice(0, 14) + '\u2026' : t;
-  const px = t => X0 + t.c * DX, slotY = (t, k) => t.y + (k ? 35 : 11);
-  let ln = '', bx = '';
-  PO.forEach(t => [
+
+// Babak WILDCARD: peserta wildcard saling adu, pemenang terakhir (maks. 4) lolos ke Playoff (Lower Bracket)
+function wcBoard() {
+  const { BW, DX, BH } = BRC, X0 = 14, Y0 = 40;
+  const T = DE.T.filter(t => t.br == 'wc');
+  const px = t => X0 + (t.r - 1) * DX, yOf = t => Y0 + t.y;
+  const sx = X0 + DE.wcCols * DX, pool = DE.lowerPool, SL = 34;
+  let ln = '', bx = '', sl = '';
+  T.forEach(t => [
     t.a,
     t.b
   ].forEach((src, k) => {
-    if (!src.w)
+    const f = src.w;
+    if (!f)
       return;
-    const f = src.w, x1 = px(f) + BW, y1 = f.y + 23, x2 = px(t), y2 = slotY(t, k), xm = x2 - 14, col = t.br == 'lb' || t.br == 'gf' && k ? '#4fb3d9' : '#f5b93a';
-    ln += `<path d="M${ x1 } ${ y1 }H${ xm }V${ y2 }H${ x2 }" fill="none" stroke="${ col }" stroke-width="2" opacity="${ f.done ? 1 : 0.35 }"/>`;
+    ln += `<path d="M${ px(f) + BW } ${ yOf(f) + 11 }H${ px(t) - 14 }V${ yOf(t) + (k ? 35 : 11) }H${ px(t) }" fill="none" stroke="#8a5cd6" stroke-width="2" opacity="${ f.done ? 1 : 0.35 }"/>`;
   }));
-  PO.forEach(t => {
-    const x = px(t), y = t.y, lb = t.br == 'lb', gf = t.br == 'gf', fill = lb ? '#2a7fa8' : gf ? '#ffd25a' : '#c9a24a', tx = lb ? '#fff' : '#2a1c00';
-    const ph = src => src.w ? 'PEMENANG MATCH ' + src.w.id : src.l ? 'KALAH MATCH ' + src.l.id : '';
-    const row = (k, src, sc) => {
-      const p = res(src), yy = y + k * 24, win = t.done && t.win === p, los = t.done && t.lose === p;
-      return `<g opacity="${ los ? 0.45 : 1 }"><rect x="${ x }" y="${ yy }" width="${ BW }" height="22" rx="5" fill="${ fill }"${ win ? ' stroke="#fff" stroke-width="2.5"' : '' }/>` + (p ? `<text x="${ x + 8 }" y="${ yy + 16 }" font-size="13" font-weight="800" fill="${ tx }">${ esc(nm(p.n)) }</text>` : `<text x="${ x + 8 }" y="${ yy + 15 }" font-size="9.5" font-weight="700" fill="${ tx }" opacity=".6">${ ph(src) }</text>`) + (t.done ? `<rect x="${ x + BW - 26 }" y="${ yy }" width="26" height="22" rx="5" fill="#0007"/><text x="${ x + BW - 13 }" y="${ yy + 16 }" text-anchor="middle" font-size="13" font-weight="900" fill="#fff">${ sc }</text>` : '') + '</g>';
-    };
-    const rdy = M.some(m => m.t === t) && !t.done;
-    bx += `<text x="${ x }" y="${ y - 5 }" font-size="11" font-weight="800" fill="${ lb ? '#8fd3ee' : '#f0d68a' }">${ gf ? 'GRAND FINAL' : 'MATCH ' + t.id }</text>` + (rdy ? `<rect class="${ t === cur ? 'hl' : '' }" x="${ x - 4 }" y="${ y - 3 }" width="${ BW + 8 }" height="52" rx="8" fill="none" stroke="${ t === cur ? '#fff' : '#ffffff88' }" stroke-width="${ t === cur ? 3 : 1.5 }" stroke-dasharray="${ t === cur ? '' : '4 3' }"/>` : '') + row(0, t.a, t.sa) + row(1, t.b, t.sb);
+  T.forEach(t => bx += matchSVG(t, px(t), yOf(t)));
+  pool.forEach((src, i) => {
+    const y = Y0 + i * SL, p = res(src);
+    if (src.w)
+      ln += `<path d="M${ px(src.w) + BW } ${ yOf(src.w) + 11 }H${ sx - 14 }V${ y + 11 }H${ sx }" fill="none" stroke="#2fbf71" stroke-width="2" opacity="${ src.w.done ? 1 : 0.35 }"/>`;
+    sl += `<rect x="${ sx }" y="${ y }" width="${ BW }" height="22" rx="5" fill="#2e9b5f"/>` + (p ? `<text x="${ sx + 8 }" y="${ y + 16 }" font-size="13" font-weight="800" fill="#fff">${ esc(svgNm(p.n)) }</text>` : `<text x="${ sx + 8 }" y="${ y + 15 }" font-size="10.5" font-weight="700" fill="#fff" opacity=".85">${ esc(srcLbl(src)) }</text>`);
   });
-  $('bk').innerHTML = `<svg id="brk" viewBox="0 0 ${ W } ${ HH }" preserveAspectRatio="xMidYMin meet" font-family="Trebuchet MS,Segoe UI,Arial,sans-serif"><text x="${ X0 }" y="16" font-size="15" font-weight="900" letter-spacing="3" fill="#f5b93a">UPPER BRACKET</text><line x1="0" x2="${ W }" y1="${ sepY }" y2="${ sepY }" stroke="#ffffff66" stroke-dasharray="7 6"/><text x="${ X0 }" y="${ sepY + 24 }" font-size="15" font-weight="900" letter-spacing="3" fill="#4fb3d9">LOWER BRACKET</text>${ ln }${ bx }</svg>`;
+  const ys = T.map(t => yOf(t) + BH).concat([Y0 + pool.length * SL]);
+  const totalW = sx + BW + 24, totalH = Math.max(...ys) + 16;
+  $('bk').innerHTML = `<svg id="brk" viewBox="0 0 ${ totalW } ${ totalH }" preserveAspectRatio="xMidYMin meet" font-family="Trebuchet MS,Segoe UI,Arial,sans-serif"><text x="${ X0 }" y="20" font-size="15" font-weight="900" letter-spacing="3" fill="#b08cff">\u26A1 WILDCARD</text><text x="${ sx }" y="20" font-size="15" font-weight="900" letter-spacing="3" fill="#4fd48c">\u2705 LOLOS PLAYOFF (${ DE.W } SLOT)</text>${ ln }${ bx }${ sl }</svg>`;
+}
+
+// Menggambar bagan ganda (DE): Upper Bracket di atas, Lower Bracket di bawah (menerima
+// siswa yang kalah di Upper + pemenang Wildcard), Grand Final di kanan menyambungkan
+// juara keduanya. Garis dari Upper turun ke Lower menandakan siswa yang "turun kelas".
+function poBoard() {
+  if (!DE) {
+    $('bk').innerHTML = '';
+    return;
+  }
+  const {BW, DX} = BRC, X0 = 26, wcc = 0, PT = DE.T.filter(t => t.br != 'wc');
+  const lowY = PT.filter(t => t.br == 'lb').map(t => t.y), lbH = (lowY.length ? Math.max(...lowY) : 0) + BRC.BH;
+  const nm = s => s.length > 15 ? s.slice(0, 14) + '\u2026' : s;
+  const px = t => X0 + (t.r - 1) * DX;
+  const UB_Y0 = 36, sepY = UB_Y0 + DE.ubHeight + 16, LB_Y0 = sepY + 54;
+  const yOf = t => (t.br == 'ub' ? UB_Y0 : LB_Y0) + t.y;
+  const colorOf = t => t.br == 'ub' ? '#c9a24a' : t.br == 'wc' ? '#8a5cd6' : '#2a7fa8';
+  const textOf = t => t.br == 'ub' ? '#2a1c00' : '#fff';
+  // Keterangan slot yang belum terisi: dari match mana pemainnya datang
+  const lbl = s => s.w ? 'Pemenang Match ' + s.w.id : s.l ? 'Kalah Match ' + s.l.id : '';
+  let ln = '', bx = '';
+  PT.forEach(t => [
+    t.a,
+    t.b
+  ].forEach((src, k) => {
+    const f = src.w || src.l;
+    if (!f || f.br == 'wc')
+      return;
+    const x1 = px(f) + BW, y1 = yOf(f) + 11, x2 = px(t), y2 = yOf(t) + (k ? 35 : 11), xm = x2 - 14;
+    ln += `<path d="M${ x1 } ${ y1 }H${ xm }V${ y2 }H${ x2 }" fill="none" stroke="${ colorOf(t) }" stroke-width="2" opacity="${ f.done ? 1 : 0.35 }"/>`;
+  }));
+  PT.forEach(t => bx += matchSVG(t, px(t), yOf(t)));
+  const ubFinal = DE.ub[DE.n][0], lbFinal = DE.lbFinalMatch;
+  const maxX = Math.max(...PT.map(t => px(t) + BW));
+  const gx = maxX + 36, gy = lbFinal ? (yOf(ubFinal) + yOf(lbFinal)) / 2 : yOf(ubFinal);
+  const gfRow = (k, p, sc, isWin, wait) => {
+    const yy = gy + k * 24;
+    return `<g opacity="${ p && phase == 'done' && !isWin ? 0.45 : 1 }"><rect x="${ gx }" y="${ yy }" width="${ BW }" height="22" rx="5" fill="#ffd25a"${ isWin ? ' stroke="#fff" stroke-width="2.5"' : '' }/>` + (p ? `<text x="${ gx + 8 }" y="${ yy + 16 }" font-size="13" font-weight="800" fill="#2a1c00">${ esc(nm(p.n)) }</text>` : `<text x="${ gx + 8 }" y="${ yy + 15 }" font-size="10.5" font-weight="700" fill="#2a1c00" opacity=".75">${ esc(wait) }</text>`) + (sc !== undefined ? `<rect x="${ gx + BW - 26 }" y="${ yy }" width="26" height="22" rx="5" fill="#0007"/><text x="${ gx + BW - 13 }" y="${ yy + 16 }" text-anchor="middle" font-size="13" font-weight="900" fill="#fff">${ sc }</text>` : '') + '</g>';
+  };
+  const gfm = H.find(m => m.br == 'gf');
+  const gfReady = phase == 'gf';
+  const ubWait = 'Pemenang Match ' + ubFinal.id;
+  const lbWait = lbFinal ? 'Pemenang Match ' + lbFinal.id : 'Juara Lower Bracket';
+  const ln1 = `<path d="M${ px(ubFinal) + BW } ${ yOf(ubFinal) + 11 }H${ gx - 14 }V${ gy + 11 }H${ gx }" fill="none" stroke="#ffd25a" stroke-width="2" opacity="${ UBCHAMP ? 1 : 0.35 }"/>`;
+  const ln2 = lbFinal ? `<path d="M${ px(lbFinal) + BW } ${ yOf(lbFinal) + 11 }H${ gx - 14 }V${ gy + 35 }H${ gx }" fill="none" stroke="#ffd25a" stroke-width="2" opacity="${ LBCHAMP ? 1 : 0.35 }"/>` : '';
+  const gfBox = `<text x="${ gx }" y="${ gy - 5 }" font-size="11" font-weight="800" fill="#ffd25a">GRAND FINAL</text>` + (gfReady ? `<rect class="${ M[0] && M[0].br == 'gf' ? 'hl' : '' }" x="${ gx - 4 }" y="${ gy - 3 }" width="${ BW + 8 }" height="52" rx="8" fill="none" stroke="#fff" stroke-width="2"/>` : '') + gfRow(0, UBCHAMP, gfm && gfm.sa, gfm && gfm.win === UBCHAMP, ubWait) + gfRow(1, LBCHAMP, gfm && gfm.sb, gfm && gfm.win === LBCHAMP, lbWait);
+  const totalW = gx + BW + 24, totalH = Math.max(LB_Y0 + lbH, gy + 60);
+  const wcLabel = wcc ? `<text x="${ X0 }" y="${ sepY + 24 }" font-size="15" font-weight="900" letter-spacing="3" fill="#b08cff">\u26A1 WILDCARD</text>` : '';
+  $('bk').innerHTML = `<svg id="brk" viewBox="0 0 ${ totalW } ${ totalH }" preserveAspectRatio="xMidYMin meet" font-family="Trebuchet MS,Segoe UI,Arial,sans-serif"><text x="${ X0 }" y="20" font-size="15" font-weight="900" letter-spacing="3" fill="#f5b93a">UPPER BRACKET</text><line x1="0" x2="${ totalW }" y1="${ sepY }" y2="${ sepY }" stroke="#ffffff66" stroke-dasharray="7 6"/>${ wcLabel }<text x="${ X0 + wcc * DX }" y="${ sepY + 24 }" font-size="15" font-weight="900" letter-spacing="3" fill="#4fb3d9">LOWER BRACKET</text>${ ln }${ bx }${ ln1 }${ ln2 }${ gfBox }</svg>`;
 }
 
 // =========================================================
 // JALANNYA SATU DUEL (VS -> Ronde -> soal -> dorongan -> menang)
 // =========================================================
 function nextDuel() {
+  if (DUELBUSY || !M[mi])
+    return;
+  DUELBUSY = true;
   const m = M[mi];
   startDuel(m[0], m[1]);
 }
 
 // Layar VS sebelum duel + pasang karakter sesuai varian siswa
+const START_LIVES = 3;
+const WIN_POINTS = 5;
+function heartsHTML(n) {
+  let s = '';
+  for (let i = 0; i < START_LIVES; i++)
+    s += i < n ? '\u2764\uFE0F' : '<span class="dead">\u2764\uFE0F</span>';
+  return s;
+}
 function startDuel(a, b) {
   D = {
     a,
@@ -754,6 +907,7 @@ function startDuel(a, b) {
     pos: 0,
     n: 0,
     act: false,
+    lives: [START_LIVES, START_LIVES],
     wr: [
       0,
       0
@@ -763,6 +917,8 @@ function startDuel(a, b) {
       0
     ]
   };
+  $('lvl').innerHTML = heartsHTML(START_LIVES);
+  $('lvr').innerHTML = heartsHTML(START_LIVES);
   $('vl').textContent = a.n;
   $('vr').textContent = b.n;
   $('nl').textContent = a.n;
@@ -840,7 +996,7 @@ function nextQ() {
 // Tampilkan soal & tombol jawaban (dipanggil setelah banner selesai)
 function buildQ(q) {
   $('q').textContent = q[0];
-  $('info').textContent = 'Soal ' + D.n + ' dari 5 \u2022 duluan 3 poin';
+  $('info').textContent = 'Soal ' + D.n + ' \u2022 duluan ' + WIN_POINTS + ' poin \u2022 3 nyawa';
   pips();
   [
     'bl',
@@ -881,6 +1037,18 @@ function press(s, b) {
     snd(120, 0.25, 'sawtooth');
     const bs = [...b.parentNode.children];
     bs.forEach(x => x.disabled = true);
+    D.lives[s]--;
+    $(s ? 'lvr' : 'lvl').innerHTML = heartsHTML(D.lives[s]);
+    if (D.lives[s] <= 0) {
+      D.act = false;
+      snd(70, 0.5, 'sawtooth');
+      $('info').textContent = (s ? D.b.n : D.a.n) + ' KEHABISAN NYAWA! \uD83D\uDC80';
+      setTimeout(() => {
+        D.pos = s ? 1 : -1;
+        endDuel(true);
+      }, 900);
+      return;
+    }
     if (D.wr[0] && D.wr[1]) {
       D.act = false;
       $('info').textContent = 'Dua-duanya salah! Soal baru...';
@@ -898,50 +1066,26 @@ function press(s, b) {
 
 // Bar HP (stamina) tiap pemain
 function hpSet(id, rem) {
-  const el = $(id), pct = Math.max(0, rem) / 3 * 100;
+  const el = $(id), pct = Math.max(0, rem) / WIN_POINTS * 100;
   el.style.width = pct + '%';
   el.classList.remove('mid', 'low');
-  if (rem <= 1)
+  if (rem <= Math.ceil(WIN_POINTS * 0.2))
     el.classList.add('low');
-  else if (rem == 2)
+  else if (rem <= Math.ceil(WIN_POINTS * 0.5))
     el.classList.add('mid');
 }
 function pips() {
-  hpSet('hpl', 3 - D.sb);
-  hpSet('hpr', 3 - D.sa);
+  hpSet('hpl', WIN_POINTS - D.sb);
+  hpSet('hpr', WIN_POINTS - D.sa);
 }
 
-// Overlay "Nama MENDORONG!" sebagai jeda saat ada yang dapat poin
-function showPush(side, name, cb) {
-  const el = $('pushcall');
-  const ar = document.createElement('div');
-  ar.className = 'pc-arrow ' + (side ? 'r' : 'l');
-  ar.style.background = side ? 'linear-gradient(90deg,transparent,#ff7a2e)' : 'linear-gradient(90deg,#2fbf71,transparent)';
-  el.appendChild(ar);
-  const msg = name + ' MENDORONG! \uD83D\uDCA5';
-  const t = document.createElement('div');
-  t.className = 'pc-txt' + (msg.length > 18 ? ' pclong' : '');
-  t.style.color = side ? 'var(--o)' : 'var(--g)';
-  t.textContent = msg;
-  el.appendChild(t);
-  requestAnimationFrame(() => {
-    ar.classList.add('show');
-    t.classList.add('show');
-  });
-  setTimeout(() => {
-    ar.classList.remove('show');
-    t.classList.remove('show');
-    t.classList.add('pc-out');
-    setTimeout(() => {
-      ar.remove();
-      t.remove();
-      cb();
-    }, 260);
-  }, 680);
-}
+// Animasi dorongan: karakter yang menjawab benar membesar & menyerang ke arah lawan.
+// Jeda sekitar 2 detik sebelum lanjut — animasi karakternya sendiri yang menunjukkan
+// siapa mendorong siapa, tanpa teks overlay besar.
+const PUSH_PAUSE_MS = 2000;
 function push(s) {
   s ? D.sb++ : D.sa++;
-  D.pos = (D.sa - D.sb) / 3;
+  D.pos = (D.sa - D.sb) / WIN_POINTS;
   pips();
   const px = D.pos * 90;
   $('sl').style.transform = $('sr').style.transform = `translateX(${ px }px)`;
@@ -956,16 +1100,37 @@ function push(s) {
   g.classList.remove('shake');
   void g.offsetWidth;
   g.classList.add('shake');
-  showPush(s, nm, () => {
-    if (D.sa >= 3 || D.sb >= 3)
+  // dir: arah menyerang. s=1 (kanan menjawab benar) -> menyerang ke kiri (negatif).
+  const dir = s ? -1 : 1;
+  const atkImg = s ? $('imr') : $('iml');
+  const hitImg = s ? $('iml') : $('imr');
+  atkImg.style.setProperty('--lunge', dir * 42 + 'px');
+  atkImg.classList.remove('atk');
+  void atkImg.offsetWidth;
+  atkImg.classList.add('atk');
+  setTimeout(() => {
+    hitImg.style.setProperty('--flinch', dir * 16 + 'px');
+    hitImg.style.setProperty('--rot', dir * 7 + 'deg');
+    hitImg.classList.remove('hit');
+    void hitImg.offsetWidth;
+    hitImg.classList.add('hit');
+    snd(140, 0.2, 'sawtooth');
+  }, 320);
+  setTimeout(() => {
+    atkImg.classList.remove('atk');
+    hitImg.classList.remove('hit');
+  }, PUSH_PAUSE_MS);
+  setTimeout(() => {
+    if (D.sa >= WIN_POINTS || D.sb >= WIN_POINTS)
       endDuel();
     else
       nextQ();
-  });
+  }, PUSH_PAUSE_MS);
 }
 
-// Duel selesai: lempar yang kalah keluar ring, lanjut ke ronde berikutnya
-function endDuel() {
+// Duel selesai: lempar yang kalah keluar ring, lanjut ke ronde berikutnya.
+// ko=true berarti pemenangnya ditentukan karena lawan kehabisan nyawa (bukan poin).
+function endDuel(ko) {
   D.act = false;
   const w = D.pos > 0 ? D.a : D.b, l = D.pos > 0 ? D.b : D.a, loserEl = $(D.pos > 0 ? 'sr' : 'sl');
   loserEl.style.setProperty('--fx', (D.pos > 0 ? 300 : -300) + 'px');
@@ -975,55 +1140,49 @@ function endDuel() {
   flash();
   const svgR2 = document.querySelector('#duel .arena').getBoundingClientRect();
   spark(svgR2.left + svgR2.width / 2, svgR2.top + svgR2.height * 0.65, '#f5b93a', 34);
-  $('info').textContent = '\uD83C\uDFC5 ' + w.n + ' MENANG!';
-  setTimeout(() => {
-    const cm = M[mi];
-    cm.sa = D.sa;
-    cm.sb = D.sb;
-    cm.win = w;
-    cm.done = 1;
-    if (cm.t) {
-      const t = cm.t;
-      t.win = w;
-      t.lose = l;
-      t.done = 1;
-      t.sa = D.sa;
-      t.sb = D.sb;
-      if (t.br != 'ub')
-        l.st = 'out';
-      if (t.br == 'gf') {
-        champion(w, l, (PO.find(x => x.last) || {}).lose);
-        return;
-      }
-    } else
-      apply(w, l);
-    mi++;
-    if (mi >= M.length) {
-      round();
-    } else
-      draw();
-  }, 2300);
+  $('info').textContent = ko ? '\uD83D\uDC80 KO! ' + w.n + ' MENANG!' : '\uD83C\uDFC5 ' + w.n + ' MENANG!';
+  setTimeout(() => applyResult(w, l), 2300);
+}
+
+// Simpan hasil duel ke bagan lalu lanjut ke duel/ronde berikutnya
+function applyResult(w, l) {
+  DUELBUSY = false;
+  const cm = M[mi];
+  cm.sa = D.sa;
+  cm.sb = D.sb;
+  cm.win = w;
+  cm.done = 1;
+  if (phase == 'gf') {
+    champion(w, l);
+    return;
+  }
+  if (cm.t) {
+    cm.t.win = w;
+    cm.t.lose = l;
+    cm.t.done = 1;
+    cm.t.sa = D.sa;
+    cm.t.sb = D.sb;
+    l.st = cm.t.br == 'ub' ? 'lb' : 'out';
+  } else
+    apply(w, l);
+  mi++;
+  if (mi >= M.length) {
+    round();
+  } else
+    draw();
 }
 
 // Catat hasil menang/kalah ke status peserta sesuai fase turnamen
 function apply(w, l) {
+  (w.opp = w.opp || []).push(l);
+  (l.opp = l.opp || []).push(w);
   w.mv = l.mv = 1;
-  if (phase == 'swiss') {
-    w.w++;
-    l.l++;
-    if (w.w >= WN)
-      w.st = 'q';
-    if (l.l >= LN)
-      l.st = 'wc';
-  } else if (phase == 'wc') {
-    l.st = 'out';
-  } else if (phase == 'ub') {
-    l.st = 'lb';
-  } else if (phase == 'lb') {
-    l.st = 'out';
-  } else {
-    l.st = 'out';
-  }
+  w.w++;
+  l.l++;
+  if (w.w >= WN)
+    w.st = 'q';
+  if (l.l >= LN)
+    l.st = 'wc';
 }
 
 // =========================================================
@@ -1032,8 +1191,7 @@ function apply(w, l) {
 function champion(p, r, t) {
   phase = 'done';
   M = [];
-  BYE = null;
-  BYT = '';
+  BYE = [];
   const c = $('cine');
   $('cname').textContent = p.n;
   $('cpod').innerHTML = (r ? `<div class="pod"><small>🥈 Juara 2</small>${ esc(r.n) }</div>` : '') + `<div class="pod g"><small>🥇 Juara 1</small>${ esc(p.n) }</div>` + (t ? `<div class="pod"><small>🥉 Juara 3</small>${ esc(t.n) }</div>` : '');
